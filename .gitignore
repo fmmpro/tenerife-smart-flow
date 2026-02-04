@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Data
+data/
+*.parquet
+*.csv
+*.json
+
+# Secrets
+.env
+
+# OS
+.DS_Store
+
+# Flutter / Dart
+.dart_tool/
+.build/
+flutter_*.log
+.pub-cache/
+.pub/
+build/
