@@ -1,112 +1,115 @@
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
+# backend/app/main.py
+
+from __future__ import annotations
+
 import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# ===============================
-# APP CONFIG
-# ===============================
-
-app = FastAPI(
-    title="Tenerife Smart Flow API",
-    version="1.1.0",
-    description="API para servir el último forecast generado de afluencia vehicular en Punta de Teno."
-)
-
-# Permitir acceso desde Flutter / web
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # En producción puedes restringir dominio
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Directorios
-ROOT = Path(__file__).resolve().parents[2]  # .../tenerife-smart-flow
-DOCS_DIR = ROOT / "docs"
+from fastapi import FastAPI, HTTPException, Query
 
 
-# ===============================
-# HEALTH CHECK
-# ===============================
+APP_NAME = "tenerife-smart-flow-backend"
+ENV = os.getenv("ENV", "dev")
+
+# Rutas (en Render el repo se clona en /opt/render/project/src)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_FORECAST_24H = REPO_ROOT / "docs" / "forecast_vehiculos_24h.json"
+DEFAULT_FORECAST_72H = REPO_ROOT / "docs" / "forecast_vehiculos_72h.json"
+
+app = FastAPI(title="Tenerife Smart Flow API", version="0.1.0")
+
+
+@app.get("/")
+def root() -> Dict[str, Any]:
+    return {
+        "service": "tenerife-smart-flow-api",
+        "status": "ok",
+        "env": ENV,
+        "endpoints": {
+            "health": "/health",
+            "forecast_24h": "/forecast?hours=24",
+            "forecast_72h": "/forecast?hours=72",
+        },
+        "zone": "teno",
+    }
+
+
+@app.get("/favicon.ico")
+def favicon() -> Dict[str, str]:
+    # Evita 404 en navegadores
+    return {"ok": "true"}
+
 
 @app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "service": "tenerife-smart-flow-backend",
-        "env": "dev"
-    }
+def health() -> Dict[str, str]:
+    return {"status": "ok", "service": APP_NAME, "env": ENV}
 
 
-# ===============================
-# FORECAST ENDPOINT
-# ===============================
+def _read_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Forecast file not found: {path}")
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _normalize_predictions(preds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Asegura:
+    - vehiculos_pred >= 0
+    - vehiculos_pred_int redondeado para UI móvil
+    """
+    out: List[Dict[str, Any]] = []
+    for item in preds:
+        ts = item.get("timestamp")
+        pred = item.get("vehiculos_pred", 0.0)
+        try:
+            pred_f = float(pred)
+        except Exception:
+            pred_f = 0.0
+
+        pred_f = max(0.0, pred_f)
+        pred_int = int(round(pred_f))
+
+        out.append(
+            {
+                "timestamp": ts,
+                "vehiculos_pred": pred_f,
+                "vehiculos_pred_int": pred_int,
+            }
+        )
+    return out
+
 
 @app.get("/forecast")
-def forecast(hours: int = Query(72, ge=1, le=168)):
+def forecast(hours: int = Query(24, ge=1, le=168)) -> Dict[str, Any]:
     """
-    Devuelve el último forecast generado por el pipeline:
-      docs/forecast_vehiculos_24h.json
-      docs/forecast_vehiculos_72h.json
+    Devuelve forecast precalculado (JSON) para 24h o 72h.
+    (Modo demo/estable para concurso y app móvil.)
     """
-
-    # Validar horizonte permitido
-    if hours not in (24, 72):
-        raise HTTPException(
-            status_code=400,
-            detail="hours debe ser 24 o 72"
-        )
-
-    fpath = DOCS_DIR / f"forecast_vehiculos_{hours}h.json"
-
-    if not fpath.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=f"No existe {fpath}. Genera primero: "
-                   f"python pipeline/training/05_forecast_future.py --hours {hours}"
-        )
+    if hours <= 24:
+        path = DEFAULT_FORECAST_24H
+    elif hours <= 72:
+        path = DEFAULT_FORECAST_72H
+    else:
+        # Si piden más (hasta 168), por ahora devolvemos 72h con un aviso
+        path = DEFAULT_FORECAST_72H
 
     try:
-        data = json.loads(fpath.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error leyendo JSON: {e}"
-        )
+        payload = _read_json(path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    # ===============================
-    # NORMALIZACIÓN: evitar negativos
-    # ===============================
-    for row in data:
-        if "vehiculos_pred" in row and row["vehiculos_pred"] is not None:
-            row["vehiculos_pred"] = max(0.0, float(row["vehiculos_pred"]))
+    preds = payload.get("predictions", [])
+    preds_norm = _normalize_predictions(preds)
 
     return {
-        "zone": "teno",
+        "zone": payload.get("zone", "teno"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "hours": hours,
-        "predictions": data,
-        "source_file": str(fpath.relative_to(ROOT)),
+        "predictions": preds_norm,
+        "source_file": str(path.relative_to(REPO_ROOT)) if path.exists() else str(path),
+        "note": "hours>72 returns 72h for now" if hours > 72 else None,
     }
-
-    #========================================#
-    # RUTA RAIZ Y FAVICON OPCIONAL           #
-    #========================================#
-    from fastapi import FastAPI
-
-    app = FastAPI(title="Tenerife Smart Flow API", version="0.1.0")
-
-    @app.get("/")
-    def root():
-     return {
-        "service": "tenerife-smart-flow-api",
-        "endpoints": ["/health", "/forecast?hours=24", "/forecast?hours=72"],
-        "zone": "teno"
-     }
-
-   @app.get("/favicon.ico")
-   def favicon():
-     return {}
