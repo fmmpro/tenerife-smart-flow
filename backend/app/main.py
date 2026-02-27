@@ -91,3 +91,22 @@ def forecast(hours: int = Query(72, ge=1, le=168)):
         "predictions": data,
         "source_file": str(fpath.relative_to(ROOT)),
     }
+
+    #========================================#
+    # RUTA RAIZ Y FAVICON OPCIONAL           #
+    #========================================#
+    from fastapi import FastAPI
+
+    app = FastAPI(title="Tenerife Smart Flow API", version="0.1.0")
+
+    @app.get("/")
+    def root():
+     return {
+        "service": "tenerife-smart-flow-api",
+        "endpoints": ["/health", "/forecast?hours=24", "/forecast?hours=72"],
+        "zone": "teno"
+     }
+
+   @app.get("/favicon.ico")
+   def favicon():
+     return {}
